@@ -1,23 +1,21 @@
-from flask import Flask, request, render_template
 import numpy as np
 import pandas as pd
 import pickle
+from fastapi import FastAPI, Request, Form
+from fastapi.templating import Jinja2Templates
 
-# flask app
-app = Flask(__name__)
-
-# load dataset===================================
+# Load the necessary data and models
 sym_des = pd.read_csv("datasets/symtoms_df.csv")
 precautions = pd.read_csv("datasets/precautions_df.csv")
 workout = pd.read_csv("datasets/workout_df.csv")
 description = pd.read_csv("datasets/description.csv")
 medications = pd.read_csv('datasets/medications.csv')
 diets = pd.read_csv("datasets/diets.csv")
-
-# load model======================================
 svc = pickle.load(open('models/svc.pkl', 'rb'))
 
-# helper functions=================================
+# Initialize FastAPI app and Jinja2 templates
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
 def helper(dis):
     desc = description[description['Disease'] == dis]['Description']
@@ -87,25 +85,26 @@ def get_predicted_value(patient_symptoms):
         input_vector[symptoms_dict[item]] = 1
     return diseases_list[svc.predict([input_vector])[0]]
 
-# creating routes========================================
+@app.get("/")
+def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-# Define a route for the home page
-@app.route('/predict', methods=['GET', 'POST'])
-def home():
-    if request.method == 'POST':
-        symptoms = request.form.get('symptoms')
+@app.post("/predict")
+def predict(request: Request, symptoms: str = Form(...)):
+    try:
         if symptoms == "Symptoms":
             message = "Please either write symptoms or you have written misspelled symptoms"
-            return render_template('index.html', message=message)
+            return templates.TemplateResponse("index.html", {"request": request, "message": message})
         else:
-            # Split the user's input into a list of symptoms (assuming they are comma-separated)
             user_symptoms = [s.strip() for s in symptoms.split(',')]
-            # Remove any extra characters, if any
             user_symptoms = [symptom.strip("[]' ") for symptom in user_symptoms]
+
+            # Check if all symptoms are valid
+            invalid_symptoms = [symptom for symptom in user_symptoms if symptom not in symptoms_dict]
+            if invalid_symptoms:
+                message = f"Invalid symptoms: {', '.join(invalid_symptoms)}"
+                return templates.TemplateResponse("index.html", {"request": request, "message": message})
+
             predicted_disease = get_predicted_value(user_symptoms)
             dis_des, precautions, medications, rec_diet, workout = helper(predicted_disease)
 
@@ -113,11 +112,20 @@ def home():
             for i in precautions[0]:
                 my_precautions.append(i)
 
-            return render_template('index.html', predicted_disease=predicted_disease, dis_des=dis_des,
-                                   my_precautions=my_precautions, medications=medications, my_diet=rec_diet,
-                                   workout=workout)
+            return templates.TemplateResponse("index.html", {
+                "request": request,
+                "predicted_disease": predicted_disease,
+                "dis_des": dis_des,
+                "my_precautions": my_precautions,
+                "medications": medications,
+                "my_diet": rec_diet,
+                "workout": workout
+            })
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        # Render the error.html template
+        return templates.TemplateResponse("error.html", {"request": request, "error": str(e)})
 
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
